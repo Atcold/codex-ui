@@ -18,11 +18,11 @@ The result reads as `model@machine project · branch · context · quota`. Selec
 
 Build from `codex-rs/` with `cargo build --bin codex --profile dev --config profile.dev.debug=0 --config profile.dev.incremental=false`. The executable is `codex-rs/target/debug/codex`. Use the normal shared daemon when switching between packaged and custom clients; forcing a separate server with `--no-daemon` can conflict with an existing conversation writer. Keep the packaged executable available for rollback. Rebase the `familiar-footer` branch onto a new release, resolve any changes to the status surface modules, and rebuild to update the custom executable.
 
-The shared launcher supplies the custom footer items as command-line overrides, so the packaged executable can still use the ordinary configuration. The launcher and custom executable can live together in a synced application folder. The project note records that installation location and the review state.
+The local launcher supplies the custom footer items as command-line overrides, so the packaged executable can still use the ordinary configuration. Each machine keeps its launcher and versioned executable folders in the XDG data directory, with build artifacts in the XDG cache directory and builds from this repository. Shared Codex configuration and conversation state remain separate from that installation.
 
 The release tag sets the workspace version to `0.166.0` while its lockfile still records local packages as `0.0.0`. The initial build updates that version metadata; external dependency versions stay pinned. Rust 1.95.0 and CMake are required for this release.
 
-The executable package needs the matching `codex-code-mode-host` and `codex-exec-server` helpers beside the custom executable. Copy those helpers from the same packaged release when installing the custom build.
+Each versioned installation is a directory containing the patched executable and the matching `codex-code-mode-host` and `codex-exec-server` helpers beside the custom executable. Copy those helpers from the same packaged release when installing the custom build.
 
 The default footer shows only the five-hour quota, without a window label. Reset times use 24-hour `H:mm` format without a date. The weekly bar remains an optional field.
 
