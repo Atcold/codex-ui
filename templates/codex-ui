@@ -1,0 +1,16 @@
+#!/bin/sh
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ -L "$script_dir/current" ]; then
+    binary="$script_dir/current/bin/codex-ui"
+else
+    binary="$script_dir/bin/codex-ui"
+fi
+if [ ! -x "$binary" ]; then
+    echo 'Install the custom Codex bundle before starting codex-ui.' >&2
+    exit 1
+fi
+exec "$binary" \
+    -c 'tui.status_line=["model-with-host","current-dir-name","git-branch","context-used","five-hour-limit-bar"]' \
+    -c 'tui.keymap.pager.scroll_up=["up","k","alt-page-up"]' \
+    -c 'tui.keymap.pager.scroll_down=["down","j","alt-page-down"]' \
+    -c 'tui.status_line_use_colors=true' "$@"

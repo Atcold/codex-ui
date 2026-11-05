@@ -1,0 +1,441 @@
+diff --git a/codex-rs/tui/src/bottom_pane/mod.rs b/codex-rs/tui/src/bottom_pane/mod.rs
+index 5e4dee0ff5220ffbfcd92f88be3320ef2cd0e7d1..a5a7632d203f7a67267d8fc70756046c3b1ec25e 100644
+--- a/codex-rs/tui/src/bottom_pane/mod.rs
++++ b/codex-rs/tui/src/bottom_pane/mod.rs
+@@ -244,10 +244,9 @@ const APPROVAL_PROMPT_TYPING_IDLE_DELAY: Duration = Duration::from_secs(1);
+ 
+ /// Whether Ctrl+C/Ctrl+D require a second press to quit.
+ ///
+-/// This UX experiment was enabled by default, but requiring a double press to quit feels janky in
+-/// practice (especially for users accustomed to shells and other TUIs). Disable it for now while we
+-/// rethink a better quit/interrupt design.
+-pub(crate) const DOUBLE_PRESS_QUIT_SHORTCUT_ENABLED: bool = false;
++/// The first press arms the quit shortcut and shows a hint. Pressing the same
++/// shortcut again within `QUIT_SHORTCUT_TIMEOUT` exits.
++pub(crate) const DOUBLE_PRESS_QUIT_SHORTCUT_ENABLED: bool = true;
+ 
+ /// The result of offering a cancellation key to a bottom-pane surface.
+ ///
+diff --git a/codex-rs/tui/src/bottom_pane/status_line_setup.rs b/codex-rs/tui/src/bottom_pane/status_line_setup.rs
+index c4ca02c6dd2d2a2674b3226d1d1f4adb7fd0941d..1b18f026c925cc19391759222ddd5a512028bb80 100644
+--- a/codex-rs/tui/src/bottom_pane/status_line_setup.rs
++++ b/codex-rs/tui/src/bottom_pane/status_line_setup.rs
+@@ -62,12 +62,18 @@ pub(crate) enum StatusLineItem {
+     /// Model name with reasoning level and processing tier.
+     ModelWithReasoning,
+ 
++    /// Model name followed by the machine's display name.
++    ModelWithHost,
++
+     /// Current reasoning level.
+     Reasoning,
+ 
+     /// Current working directory path.
+     CurrentDir,
+ 
++    /// Last component of the current working directory, including outside Git repositories.
++    CurrentDirName,
++
+     /// Project root directory (if detected).
+     #[strum(
+         to_string = "project-name",
+@@ -110,9 +116,13 @@ pub(crate) enum StatusLineItem {
+ 
+     /// Remaining usage on the primary rate limit.
+     FiveHourLimit,
++    /// Consumed five-hour allowance with a ten-cell bar and reset time.
++    FiveHourLimitBar,
+ 
+     /// Remaining usage on the secondary rate limit.
+     WeeklyLimit,
++    /// Consumed weekly allowance with a ten-cell bar and reset time.
++    WeeklyLimitBar,
+ 
+     /// Codex application version.
+     CodexVersion,
+@@ -174,12 +184,16 @@ impl StatusLineItem {
+         match self {
+             StatusLineItem::ModelName => "Current model name",
+             StatusLineItem::ModelWithReasoning => "Current model name with reasoning level",
++            StatusLineItem::ModelWithHost => "Current model name followed by @machine",
++            StatusLineItem::FiveHourLimitBar => "Five-hour usage with ten boxes and reset time",
++            StatusLineItem::WeeklyLimitBar => "Weekly usage with ten boxes and reset time",
+             StatusLineItem::Reasoning => "Current reasoning level",
+             StatusLineItem::Profile => {
+                 "Config profile selected with --profile (omitted when unset)"
+             }
+             StatusLineItem::Provider => "Model provider for the active thread",
+             StatusLineItem::CurrentDir => "Current working directory",
++            StatusLineItem::CurrentDirName => "Current working directory name",
+             StatusLineItem::ProjectRoot => "Project name (omitted when unavailable)",
+             StatusLineItem::Hostname => "Current machine hostname (omitted when unavailable)",
+             StatusLineItem::GitBranch => "Current Git branch (omitted when unavailable)",
+@@ -238,10 +252,12 @@ impl StatusLineItem {
+         match self {
+             StatusLineItem::ModelName => StatusSurfacePreviewItem::Model,
+             StatusLineItem::ModelWithReasoning => StatusSurfacePreviewItem::ModelWithReasoning,
++            StatusLineItem::ModelWithHost => StatusSurfacePreviewItem::ModelWithHost,
+             StatusLineItem::Reasoning => StatusSurfacePreviewItem::Reasoning,
+             StatusLineItem::Profile => StatusSurfacePreviewItem::Profile,
+             StatusLineItem::Provider => StatusSurfacePreviewItem::Provider,
+             StatusLineItem::CurrentDir => StatusSurfacePreviewItem::CurrentDir,
++            StatusLineItem::CurrentDirName => StatusSurfacePreviewItem::CurrentDirName,
+             StatusLineItem::ProjectRoot => StatusSurfacePreviewItem::ProjectRoot,
+             StatusLineItem::Hostname => StatusSurfacePreviewItem::Hostname,
+             StatusLineItem::GitBranch => StatusSurfacePreviewItem::GitBranch,
+@@ -253,7 +269,9 @@ impl StatusLineItem {
+             StatusLineItem::ContextRemaining => StatusSurfacePreviewItem::ContextRemaining,
+             StatusLineItem::ContextUsed => StatusSurfacePreviewItem::ContextUsed,
+             StatusLineItem::FiveHourLimit => StatusSurfacePreviewItem::FiveHourLimit,
++            StatusLineItem::FiveHourLimitBar => StatusSurfacePreviewItem::FiveHourLimitBar,
+             StatusLineItem::WeeklyLimit => StatusSurfacePreviewItem::WeeklyLimit,
++            StatusLineItem::WeeklyLimitBar => StatusSurfacePreviewItem::WeeklyLimitBar,
+             StatusLineItem::CodexVersion => StatusSurfacePreviewItem::CodexVersion,
+             StatusLineItem::ContextWindowSize => StatusSurfacePreviewItem::ContextWindowSize,
+             StatusLineItem::UsedTokens => StatusSurfacePreviewItem::UsedTokens,
+diff --git a/codex-rs/tui/src/bottom_pane/status_line_style.rs b/codex-rs/tui/src/bottom_pane/status_line_style.rs
+index 6041a241050da147676ec387f582941d5fa062e7..b08dd40bd0d015812877b4bbe85427482a0e8386 100644
+--- a/codex-rs/tui/src/bottom_pane/status_line_style.rs
++++ b/codex-rs/tui/src/bottom_pane/status_line_style.rs
+@@ -38,9 +38,12 @@ impl StatusLineAccent {
+         match item {
+             StatusLineItem::ModelName
+             | StatusLineItem::ModelWithReasoning
++            | StatusLineItem::ModelWithHost
+             | StatusLineItem::Provider
+             | StatusLineItem::Reasoning => Self::Model,
+-            StatusLineItem::CurrentDir | StatusLineItem::ProjectRoot => Self::Path,
++            StatusLineItem::CurrentDir
++            | StatusLineItem::CurrentDirName
++            | StatusLineItem::ProjectRoot => Self::Path,
+             StatusLineItem::GitBranch
+             | StatusLineItem::PullRequestNumber
+             | StatusLineItem::BranchChanges => Self::Branch,
+@@ -53,7 +56,10 @@ impl StatusLineAccent {
+             | StatusLineItem::TotalOutputTokens
+             | StatusLineItem::ThreadCredits
+             | StatusLineItem::EstimatedThreadCost => Self::Usage,
+-            StatusLineItem::FiveHourLimit | StatusLineItem::WeeklyLimit => Self::Limit,
++            StatusLineItem::FiveHourLimit
++            | StatusLineItem::WeeklyLimit
++            | StatusLineItem::FiveHourLimitBar
++            | StatusLineItem::WeeklyLimitBar => Self::Limit,
+             StatusLineItem::CodexVersion
+             | StatusLineItem::Hostname
+             | StatusLineItem::SessionId
+@@ -120,7 +126,48 @@ where
+     let mut spans = Vec::new();
+     for (item, text) in segments {
+         if !spans.is_empty() {
+-            spans.push(STATUS_LINE_SEPARATOR.set_style(secondary_text_style()));
++            let separator = if item == StatusLineItem::CurrentDirName {
++                " "
++            } else {
++                STATUS_LINE_SEPARATOR
++            };
++            spans.push(separator.set_style(secondary_text_style()));
++        }
++        if use_theme_colors && item == StatusLineItem::ModelWithHost {
++            if let Some((model, host)) = text.rsplit_once('@') {
++                spans.push(Span::styled(
++                    model.to_owned(),
++                    Style::default().light_magenta().bold(),
++                ));
++                spans.push(Span::styled("@", Style::default().white().bold()));
++                spans.push(Span::styled(
++                    host.to_owned(),
++                    Style::default().light_blue().bold(),
++                ));
++            } else {
++                spans.push(Span::styled(text, Style::default().light_magenta().bold()));
++            }
++            continue;
++        }
++        if use_theme_colors && item == StatusLineItem::CurrentDirName {
++            spans.push(Span::styled(text, Style::default().light_yellow().bold()));
++            continue;
++        }
++        if use_theme_colors
++            && matches!(
++                item,
++                StatusLineItem::FiveHourLimitBar | StatusLineItem::WeeklyLimitBar
++            )
++        {
++            let filled = text.matches('◼').count();
++            let color = match filled {
++                0..=3 => Color::Green,
++                4..=6 => Color::Yellow,
++                7..=8 => Color::LightRed,
++                _ => Color::Red,
++            };
++            spans.push(Span::styled(text, Style::default().fg(color).dim()));
++            continue;
+         }
+         let style = if use_theme_colors
+             && matches!(
+@@ -152,6 +199,11 @@ where
+         };
+         let style = if item == StatusLineItem::PullRequestNumber {
+             style.underlined()
++        } else if matches!(
++            item,
++            StatusLineItem::ContextUsed | StatusLineItem::ContextRemaining
++        ) {
++            style.dim()
+         } else {
+             style
+         };
+diff --git a/codex-rs/tui/src/bottom_pane/status_surface_preview.rs b/codex-rs/tui/src/bottom_pane/status_surface_preview.rs
+index d940ecb404428cf19ce12f23b1c44052a3a77cb9..51c75bc0573c1fccf886075a339f488742de015a 100644
+--- a/codex-rs/tui/src/bottom_pane/status_surface_preview.rs
++++ b/codex-rs/tui/src/bottom_pane/status_surface_preview.rs
+@@ -12,6 +12,7 @@ pub(crate) enum StatusSurfacePreviewItem {
+     ProjectName,
+     ProjectRoot,
+     CurrentDir,
++    CurrentDirName,
+     Hostname,
+     Status,
+     ThreadName,
+@@ -24,7 +25,9 @@ pub(crate) enum StatusSurfacePreviewItem {
+     ContextRemaining,
+     ContextUsed,
+     FiveHourLimit,
++    FiveHourLimitBar,
+     WeeklyLimit,
++    WeeklyLimitBar,
+     CodexVersion,
+     ContextWindowSize,
+     UsedTokens,
+@@ -39,6 +42,7 @@ pub(crate) enum StatusSurfacePreviewItem {
+     WorkspaceHeadline,
+     Model,
+     ModelWithReasoning,
++    ModelWithHost,
+     Reasoning,
+     Profile,
+     Provider,
+@@ -52,6 +56,7 @@ impl StatusSurfacePreviewItem {
+             StatusSurfacePreviewItem::ProjectName => "my-project",
+             StatusSurfacePreviewItem::ProjectRoot => "my-project",
+             StatusSurfacePreviewItem::CurrentDir => "~/my-project/subdir",
++            StatusSurfacePreviewItem::CurrentDirName => "subdir",
+             StatusSurfacePreviewItem::Hostname => "my-host",
+             StatusSurfacePreviewItem::Status => "Working",
+             StatusSurfacePreviewItem::ThreadName => "thread name",
+@@ -62,9 +67,11 @@ impl StatusSurfacePreviewItem {
+             StatusSurfacePreviewItem::Permissions => "Workspace",
+             StatusSurfacePreviewItem::ApprovalMode => "on-request",
+             StatusSurfacePreviewItem::ContextRemaining => "Context 0% left",
+-            StatusSurfacePreviewItem::ContextUsed => "Context 0% used",
++            StatusSurfacePreviewItem::ContextUsed => "0% ctx",
+             StatusSurfacePreviewItem::FiveHourLimit => "primary 0%",
++            StatusSurfacePreviewItem::FiveHourLimitBar => "30% ◼◼◼◻◻◻◻◻◻◻ → 15:30",
+             StatusSurfacePreviewItem::WeeklyLimit => "secondary 0%",
++            StatusSurfacePreviewItem::WeeklyLimitBar => "weekly 60% ◼◼◼◼◼◼◻◻◻◻ → 15:30",
+             StatusSurfacePreviewItem::CodexVersion => "0.0.0",
+             StatusSurfacePreviewItem::ContextWindowSize => "0 window",
+             StatusSurfacePreviewItem::UsedTokens => "0 used",
+@@ -79,6 +86,7 @@ impl StatusSurfacePreviewItem {
+             StatusSurfacePreviewItem::WorkspaceHeadline => "Workspace headline",
+             StatusSurfacePreviewItem::Model => "gpt-5.2-codex",
+             StatusSurfacePreviewItem::ModelWithReasoning => "gpt-5.2-codex medium",
++            StatusSurfacePreviewItem::ModelWithHost => "gpt-5.2-codex@my-host",
+             StatusSurfacePreviewItem::Reasoning => "medium",
+             StatusSurfacePreviewItem::Profile => "profile: <name>",
+             StatusSurfacePreviewItem::Provider => "provider: <id>",
+@@ -92,6 +100,7 @@ impl StatusSurfacePreviewItem {
+             Self::ProjectName,
+             Self::ProjectRoot,
+             Self::CurrentDir,
++            Self::CurrentDirName,
+             Self::Hostname,
+             Self::Status,
+             Self::ThreadName,
+@@ -104,7 +113,9 @@ impl StatusSurfacePreviewItem {
+             Self::ContextRemaining,
+             Self::ContextUsed,
+             Self::FiveHourLimit,
++            Self::FiveHourLimitBar,
+             Self::WeeklyLimit,
++            Self::WeeklyLimitBar,
+             Self::CodexVersion,
+             Self::ContextWindowSize,
+             Self::UsedTokens,
+@@ -119,6 +130,7 @@ impl StatusSurfacePreviewItem {
+             Self::WorkspaceHeadline,
+             Self::Model,
+             Self::ModelWithReasoning,
++            Self::ModelWithHost,
+             Self::Reasoning,
+             Self::Profile,
+             Self::Provider,
+diff --git a/codex-rs/tui/src/chatwidget/status_controls.rs b/codex-rs/tui/src/chatwidget/status_controls.rs
+index 046c55bc19b6ad1b256a33f408fa8876e3e0e488..24e6d8e5f5e119ded812ec7358847c6bfbcbe2fe 100644
+--- a/codex-rs/tui/src/chatwidget/status_controls.rs
++++ b/codex-rs/tui/src/chatwidget/status_controls.rs
+@@ -377,6 +377,8 @@ impl ChatWidget {
+             for item in [
+                 StatusSurfacePreviewItem::FiveHourLimit,
+                 StatusSurfacePreviewItem::WeeklyLimit,
++                StatusSurfacePreviewItem::FiveHourLimitBar,
++                StatusSurfacePreviewItem::WeeklyLimitBar,
+             ] {
+                 if self.status_surface_preview_value_for_item(item).is_none() {
+                     preview_data.suppress_placeholder(item);
+diff --git a/codex-rs/tui/src/chatwidget/status_surfaces.rs b/codex-rs/tui/src/chatwidget/status_surfaces.rs
+index 997c3a2be6f3597815e5a876c5f9c3fd59fe87e1..ac04a404e15edecb8fcb9c858bdccc1544e2df71 100644
+--- a/codex-rs/tui/src/chatwidget/status_surfaces.rs
++++ b/codex-rs/tui/src/chatwidget/status_surfaces.rs
+@@ -23,6 +23,52 @@ use codex_protocol::config_types::ServiceTier;
+ use codex_protocol::models::PermissionProfile;
+ use codex_utils_sandbox_summary::summarize_permission_profile;
+ 
++/// The macOS computer name matches the name used in the shell prompt. Cache the
++/// system query because status surfaces refresh frequently while streaming.
++fn status_line_machine_name() -> Option<&'static str> {
++    static NAME: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
++    NAME.get_or_init(|| {
++        #[cfg(target_os = "macos")]
++        if let Ok(output) = std::process::Command::new("/usr/sbin/scutil")
++            .args(["--get", "ComputerName"])
++            .output()
++            && output.status.success()
++        {
++            let name = String::from_utf8_lossy(&output.stdout).trim().to_owned();
++            if !name.is_empty() {
++                return Some(name);
++            }
++        }
++        os_host_name()
++    })
++    .as_deref()
++}
++
++/// Each filled box represents ten percent of the consumed allowance.
++fn status_line_quota_bar(window: &RateLimitWindowDisplay, label: &str) -> String {
++    let used = window.used_percent.clamp(0.0, 100.0);
++    let filled = (used / 10.0).round() as usize;
++    let prefix = if label.is_empty() {
++        String::new()
++    } else {
++        format!("{label} ")
++    };
++    let mut text = format!(
++        "{prefix}{used:.0}% {}{}",
++        "◼".repeat(filled),
++        "◻".repeat(10 - filled),
++    );
++    if let Some(reset) = &window.resets_at {
++        let time = reset.split(" on ").next().unwrap_or(reset);
++        let time = chrono::NaiveTime::parse_from_str(time, "%H:%M")
++            .or_else(|_| chrono::NaiveTime::parse_from_str(time, "%I:%M %p"))
++            .map(|time| time.format("%-H:%M").to_string())
++            .unwrap_or_else(|_| time.to_owned());
++        text.push_str(&format!(" → {time}"));
++    }
++    text
++}
++
+ use super::status_state::TerminalTitleStatusKind;
+ 
+ /// Items shown in the terminal title when the user has not configured a
+@@ -730,6 +776,10 @@ impl ChatWidget {
+         match item {
+             StatusLineItem::ModelName => Some(self.model_display_name().to_string()),
+             StatusLineItem::ModelWithReasoning => Some(self.model_with_reasoning_display_name()),
++            StatusLineItem::ModelWithHost => Some(match status_line_machine_name() {
++                Some(host) => format!("{}@{host}", self.model_display_name()),
++                None => self.model_display_name().to_string(),
++            }),
+             StatusLineItem::Reasoning => Some(self.reasoning_display_name()),
+             StatusLineItem::Profile => {
+                 let layer = self.config.config_layer_stack.get_active_user_layer()?;
+@@ -748,6 +798,12 @@ impl ChatWidget {
+                 ))
+             }
+             StatusLineItem::ProjectRoot => self.status_line_project_root_name(),
++            StatusLineItem::CurrentDirName => Some(
++                self.status_line_cwd()
++                    .file_name()
++                    .map(|name| name.to_string_lossy().into_owned())
++                    .unwrap_or_else(|| self.status_line_cwd().display().to_string()),
++            ),
+             StatusLineItem::Hostname => os_host_name(),
+             StatusLineItem::GitBranch => self.status_line_branch.clone(),
+             StatusLineItem::PullRequestNumber => self
+@@ -783,22 +839,30 @@ impl ChatWidget {
+                 .map(|remaining| format!("Context {remaining}% left")),
+             StatusLineItem::ContextUsed => self
+                 .status_line_context_used_percent()
+-                .map(|used| format!("Context {used}% used")),
+-            StatusLineItem::FiveHourLimit => {
++                .map(|used| format!("{used}% ctx")),
++            StatusLineItem::FiveHourLimit | StatusLineItem::FiveHourLimitBar => {
+                 let (window, is_secondary) = self
+                     .rate_limit_snapshots_by_limit_id
+                     .get("codex")
+                     .and_then(five_hour_status_window)?;
+                 let label = limit_label_for_window(window.window_minutes, is_secondary);
+-                self.status_line_limit_display(Some(window), &label)
++                if item == StatusLineItem::FiveHourLimitBar {
++                    Some(status_line_quota_bar(window, ""))
++                } else {
++                    self.status_line_limit_display(Some(window), &label)
++                }
+             }
+-            StatusLineItem::WeeklyLimit => {
++            StatusLineItem::WeeklyLimit | StatusLineItem::WeeklyLimitBar => {
+                 let (window, is_secondary) = self
+                     .rate_limit_snapshots_by_limit_id
+                     .get("codex")
+                     .and_then(weekly_status_window)?;
+                 let label = limit_label_for_window(window.window_minutes, is_secondary);
+-                self.status_line_limit_display(Some(window), &label)
++                if item == StatusLineItem::WeeklyLimitBar {
++                    Some(status_line_quota_bar(window, &label))
++                } else {
++                    self.status_line_limit_display(Some(window), &label)
++                }
+             }
+             StatusLineItem::CodexVersion => Some(CODEX_CLI_VERSION.to_string()),
+             StatusLineItem::ContextWindowSize => self
+@@ -870,6 +934,7 @@ impl ChatWidget {
+             StatusSurfacePreviewItem::Status => return Some(self.run_state_status_text()),
+             StatusSurfacePreviewItem::TaskProgress => return self.terminal_title_task_progress(),
+             StatusSurfacePreviewItem::CurrentDir => StatusLineItem::CurrentDir,
++            StatusSurfacePreviewItem::CurrentDirName => StatusLineItem::CurrentDirName,
+             StatusSurfacePreviewItem::Hostname => StatusLineItem::Hostname,
+             StatusSurfacePreviewItem::ThreadName => StatusLineItem::ThreadName,
+             StatusSurfacePreviewItem::ThreadTitle => StatusLineItem::ThreadTitle,
+@@ -881,7 +946,9 @@ impl ChatWidget {
+             StatusSurfacePreviewItem::ContextRemaining => StatusLineItem::ContextRemaining,
+             StatusSurfacePreviewItem::ContextUsed => StatusLineItem::ContextUsed,
+             StatusSurfacePreviewItem::FiveHourLimit => StatusLineItem::FiveHourLimit,
++            StatusSurfacePreviewItem::FiveHourLimitBar => StatusLineItem::FiveHourLimitBar,
+             StatusSurfacePreviewItem::WeeklyLimit => StatusLineItem::WeeklyLimit,
++            StatusSurfacePreviewItem::WeeklyLimitBar => StatusLineItem::WeeklyLimitBar,
+             StatusSurfacePreviewItem::CodexVersion => StatusLineItem::CodexVersion,
+             StatusSurfacePreviewItem::ContextWindowSize => StatusLineItem::ContextWindowSize,
+             StatusSurfacePreviewItem::UsedTokens => StatusLineItem::UsedTokens,
+@@ -896,6 +963,7 @@ impl ChatWidget {
+             StatusSurfacePreviewItem::WorkspaceHeadline => StatusLineItem::WorkspaceHeadline,
+             StatusSurfacePreviewItem::Model => StatusLineItem::ModelName,
+             StatusSurfacePreviewItem::ModelWithReasoning => StatusLineItem::ModelWithReasoning,
++            StatusSurfacePreviewItem::ModelWithHost => StatusLineItem::ModelWithHost,
+             StatusSurfacePreviewItem::Reasoning => StatusLineItem::Reasoning,
+             StatusSurfacePreviewItem::Profile => StatusLineItem::Profile,
+             StatusSurfacePreviewItem::Provider => StatusLineItem::Provider,
+diff --git a/codex-rs/tui/src/transcript_view/input.rs b/codex-rs/tui/src/transcript_view/input.rs
+index 1ce29ba3afe778b30f8b0ba49c7e3c43ebda5605..691b125fa4c77c34e97353ed5193dbd409c4eead 100644
+--- a/codex-rs/tui/src/transcript_view/input.rs
++++ b/codex-rs/tui/src/transcript_view/input.rs
+@@ -463,7 +463,7 @@ impl TranscriptView {
+     ) -> Option<ViewAction> {
+         let jump = JumpTarget::from_key(key);
+         match (key.code, key.modifiers) {
+-            (KeyCode::PageUp | KeyCode::PageDown, KeyModifiers::NONE) => {
++            (KeyCode::PageUp | KeyCode::PageDown, KeyModifiers::NONE | KeyModifiers::ALT) => {
+                 // Share page-key configuration without taking the pager's typing shortcuts.
+                 // Full pages retain the main view's existing one-row overlap.
+                 let keymap = &self.disclosure.keymap.pager;
