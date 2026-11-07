@@ -3,6 +3,8 @@ set -euo pipefail
 cd "$(dirname "$0")"
 install_root="$HOME/.local/share/whisper-dictation"
 app_bundle="$install_root/Whisper Dictation.app"
+# Add speech detection to the existing Whisper environment without replacing its model.
+uv pip install --python "$HOME/.local/share/uv/tools/mlx-whisper/bin/python" 'webrtcvad-wheels==2.0.14.post1'
 mkdir -p "$app_bundle/Contents/MacOS"
 swiftc main.swift -o "$app_bundle/Contents/MacOS/WhisperDictation" -framework AppKit -framework AVFoundation -framework ApplicationServices
 cp worker.py "$install_root/worker.py"

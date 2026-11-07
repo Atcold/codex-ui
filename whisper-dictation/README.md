@@ -2,7 +2,7 @@
 
 This macOS helper keeps MLX Whisper loaded and writes partial transcripts into the active input line. The audio and transcription stay on the Mac.
 
-Run `bash whisper-dictation/install.sh` from the repository root. It installs under `~/.local/share/whisper-dictation/` and reuses the `mlx-whisper` uv tool and cached `mlx-community/whisper-large-v3-turbo` model. The worker runs in offline mode.
+Run `bash whisper-dictation/install.sh` from the repository root. It installs under `~/.local/share/whisper-dictation/` and reuses the `mlx-whisper` uv tool and cached `mlx-community/whisper-large-v3-turbo` model. The installer adds the lightweight `webrtcvad-wheels` speech detector to that environment. The worker runs in offline mode.
 
 Assign a keyboard key to F16 and configure Karabiner to open `~/.local/share/whisper-dictation/Whisper Dictation.app` in the background. The first launch loads Whisper. The next press starts recording; another press finishes the transcript and submits it with Enter. Escape cancels and erases the current recording's inserted text.
 
@@ -15,3 +15,5 @@ Vocabulary hints are read afresh for each transcription from `~/.config/whisper-
 The worker log is `~/.local/share/whisper-dictation/worker.log`. Temporary raw audio is removed after finishing or cancellation. The transcript replaces the clipboard. The helper runs until quit from its menu; the first F16 press after login can launch it again.
 
 The marker uses an explicit emoji presentation selector so the microphone occupies two terminal columns; its two following spaces occupy two more columns.
+
+The worker uses [WebRTC voice activity detection](https://github.com/daanzu/py-webrtcvad-wheels) before transcription. It requires at least 300 ms of detected speech, including a continuous 120 ms span, trims surrounding silence, and rejects segments that fail Whisper’s confidence checks. A recording with no accepted text clears its marker without pressing Enter. Very short utterances may need to be spoken as a longer phrase.
