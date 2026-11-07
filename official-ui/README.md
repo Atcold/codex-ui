@@ -14,4 +14,6 @@ On a recognized empty, ready prompt, the first Ctrl-D arms quitting for one seco
 
 The installer switches only the local `codex-ui` launcher, preserving its previous contents as `codex-ui-patched` beside it. Invoke that saved launcher to use the previous Rust build. Reinstalling the Rust bundle with `manage.py` also restores its launcher. The wrapper honors `CODEX_UI_OFFICIAL_BINARY` when an explicit official executable is needed. Help, version, and noninteractive commands pass directly to Codex.
 
+Option + Page Up and Option + Page Down scroll the transcript one row. The wrapper translates those shortcuts into native wheel events above the composer, where the default wheel speed is one row. Pager overlays use native keymap bindings for the same shortcuts. Plain page keys retain page movement, and bracketed paste passes through unchanged.
+
 The official executable remains responsible for computer-use authentication. App access and navigation have been verified through the wrapper. Footer appearance, resizing, and quit behavior should be reviewed when updating Codex.

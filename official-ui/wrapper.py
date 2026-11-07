@@ -405,6 +405,68 @@ class Footer:
         return patch.encode()
 
 
+class ScrollKeys:
+    """Translate Alt-page keys without touching other input or bracketed paste."""
+    KEYS = {
+        b'\x1b[5;3~': 64, b'\x1b[6;3~': 65,
+        b'\x1b\x1b[5~': 64, b'\x1b\x1b[6~': 65,
+        b'\x1b[5;3:1~': 64, b'\x1b[6;3:1~': 65,
+        b'\x1b[5;3:2~': 64, b'\x1b[6;3:2~': 65,
+        b'\x1b[57362;3u': 64, b'\x1b[57363;3u': 65,
+    }
+    START_PASTE = b'\x1b[200~'
+    END_PASTE = b'\x1b[201~'
+
+    def __init__(self):
+        self.pending = bytearray()
+        self.pasting = False
+        self.deadline = 0.0
+
+    def feed(self, data: bytes, screen: Screen, footer: Footer, now: float) -> bytes:
+        self.pending.extend(data)
+        self.deadline = now + 0.05
+        output = bytearray()
+        while self.pending:
+            if self.pending[0] != 27:
+                stop = self.pending.find(b'\x1b')
+                stop = len(self.pending) if stop < 0 else stop
+                output.extend(self.pending[:stop])
+                del self.pending[:stop]
+                continue
+            tokens = ((self.END_PASTE,) if self.pasting
+                      else (self.START_PASTE, *self.KEYS))
+            matched = next((token for token in tokens if self.pending.startswith(token)), None)
+            if matched is not None:
+                del self.pending[:len(matched)]
+                if matched in (self.START_PASTE, self.END_PASTE):
+                    self.pasting = matched == self.START_PASTE
+                    output.extend(matched)
+                    continue
+                row = footer.locate(screen)
+                prompt = next((previous for previous in range((row or 0) - 1,
+                              max(-1, (row or 0) - 9), -1)
+                              if re.match(r'^\s*› ', screen.display[previous])), None)
+                if prompt is not None and prompt >= 3:
+                    # The rows just above the prompt include the composer's padding and status.
+                    # Target the upper transcript body instead, below its pinned first-row header.
+                    column = min(3, screen.columns)
+                    output.extend(f'{ESC}[<{self.KEYS[matched]};{column};2M'.encode())
+                else:
+                    output.extend(matched)  # The native pager keymap handles Alt-page in overlays.
+            elif any(token.startswith(self.pending) for token in tokens):
+                break
+            else:
+                output.append(self.pending.pop(0))
+        return bytes(output)
+
+    def expire(self, now: float) -> bytes:
+        if self.pending and now >= self.deadline:
+            data = bytes(self.pending)
+            self.pending.clear()
+            return data
+        return b''
+
+
 def host_name() -> str:
     try:
         return subprocess.check_output(['scutil', '--get', 'ComputerName'], text=True,
@@ -463,8 +525,11 @@ def main() -> int:
     rates = RateReader(binary)
     footer = Footer(metadata, host_name(), version, rates)
     guard = ExitGuard()
+    scroll_keys = ScrollKeys()
     settings = ['-c', 'tui.status_line=["codex-version"]',
-                '-c', 'tui.terminal_title=' + json.dumps(META_ITEMS)]
+                '-c', 'tui.terminal_title=' + json.dumps(META_ITEMS),
+                '-c', 'tui.keymap.pager.scroll_up=["up","k","alt-page-up"]',
+                '-c', 'tui.keymap.pager.scroll_down=["down","j","alt-page-down"]']
     saved_tty = termios.tcgetattr(0)
     child, master = pty.fork()
     if child == 0:
@@ -506,9 +571,13 @@ def main() -> int:
                         data = os.read(0, 65536)
                         if not data:
                             return 0
-                        filtered = guard.filter(data, time.monotonic())
+                        filtered = guard.filter(scroll_keys.feed(
+                            data, screen, footer, time.monotonic()), time.monotonic())
                         if filtered:
                             write_all(master, filtered)
+                pending = scroll_keys.expire(time.monotonic())
+                if pending:
+                    write_all(master, guard.filter(pending, time.monotonic()))
                 patch = footer.render(screen, guard, time.monotonic())
                 if patch:
                     write_all(1, patch)
