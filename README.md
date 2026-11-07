@@ -4,6 +4,8 @@ This repo patches a pinned Codex release to show `model@machine project · N% ct
 
 The layout follows the public [Claude status line](https://github.com/Atcold/Unix-dot-files/blob/master/Claude/statusline.sh) and [Bash configuration](https://github.com/Atcold/Unix-dot-files/blob/master/Bash/bashrc) in Unix-dot-files: model and machine, project, context usage, and consumed allowance. The patch implements those conventions in Codex.
 
+To keep the official signed Codex executable, install the [official-client footer wrapper](official-ui/README.md) with `python3 official-ui/install.py`. It renders the same footer and adds double Ctrl-D confirmation around the official terminal UI.
+
 It requires macOS, Python 3.11+, Git, the Rust toolchain specified by Codex, and CMake. Install Rust with rustup and CMake with Homebrew. The first build downloads dependencies and can take several minutes; later builds reuse the cache.
 
 Configure the paths once. The source path is a Codex clone; the installer creates it if necessary. The workspace holds separate build checkouts and cached artifacts. Install versioned executable folders in the XDG data directory (`XDG_DATA_HOME`, default `.local/share` under the home directory) and build artifacts in the XDG cache directory (`XDG_CACHE_HOME`, default `.cache`); keep shared Codex settings and state in their own synced home.

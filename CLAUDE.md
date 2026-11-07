@@ -13,3 +13,7 @@ This repo contains the reproducible installer and patch. The upstream source che
 ## Whisper dictation
 
 `whisper-dictation/` holds a separate local macOS helper and its installer. It uses the existing MLX Whisper uv tool and cached model. Keep vocabulary files and compiled apps outside the repo. The key toggles recording and submission; Escape cancels. Live previews replace only the text inserted for the recording. Runtime behavior and permission changes require user review before committing. The helper works with the official Codex executable as well as the custom footer build.
+
+## Official executable wrapper
+
+`official-ui/` holds a PTY wrapper that renders the familiar footer around the signed official executable and guards quitting with Ctrl-D on recognized empty prompts. Its installer preserves the prior local launcher as `codex-ui-patched`. It reads native terminal-title metadata and a read-only account usage RPC; do not modify the official binary or its signing requirements. User review of footer rendering, resizing, quit behavior, and computer use is required before committing this alternative.
