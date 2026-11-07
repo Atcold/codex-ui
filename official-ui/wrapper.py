@@ -184,7 +184,7 @@ def fit_segments(segments: list[tuple[str, str]], width: int) -> str:
             chars.append(char)
             used += size
         if chars:
-            output += [ESC + '[' + style + 'm', ''.join(chars)]
+            output += [ESC + '[0;' + style + 'm', ''.join(chars)]
         if used >= width:
             break
     return ''.join(output) + RESET
@@ -230,9 +230,24 @@ class RateReader:
     """Use the signed client's read-only usage RPC; never read or print tokens."""
     def __init__(self, binary: str):
         self.binary = binary
-        self.window: dict = {}
+        self.snapshot: dict = {}
         self.stop = threading.Event()
         self.process: subprocess.Popen | None = None
+
+    def window_for(self, minutes: int) -> dict:
+        for name in ('primary', 'secondary'):
+            window = self.snapshot.get(name) or {}
+            if window.get('windowDurationMins') == minutes:
+                return window
+        return {}
+
+    @property
+    def window(self) -> dict:
+        return self.window_for(300)
+
+    @property
+    def weekly(self) -> dict:
+        return self.window_for(10080)
 
     def start(self):
         threading.Thread(target=self.run, daemon=True).start()
@@ -240,7 +255,7 @@ class RateReader:
     def run(self):
         while not self.stop.is_set():
             try:
-                self.window = self.read()
+                self.snapshot = self.read()
             except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
                 pass  # Native percentages still work if reset time is unavailable.
             self.stop.wait(90)
@@ -282,11 +297,7 @@ class RateReader:
             send({'id': 2, 'method': 'account/rateLimits/read'})
             result = response(2)
             snapshot = (result.get('rateLimitsByLimitId') or {}).get('codex', result.get('rateLimits', {}))
-            for name in ('primary', 'secondary'):
-                window = snapshot.get(name) or {}
-                if window.get('windowDurationMins') == 300:
-                    return window
-            return {}
+            return snapshot
         finally:
             process.terminate()
             try:
@@ -303,6 +314,42 @@ class RateReader:
                 self.process.terminate()
             except ProcessLookupError:
                 pass
+
+
+def is_number(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def quota_segments(used: float, reset, duration: int, now: float,
+                   *, weekly: bool = False) -> list[tuple[str, str]]:
+    filled = min(10, max(0, math.floor(used / 10 + 0.5)))
+    color = '31' if filled >= 9 else '38;5;208' if filled >= 7 else '33' if filled >= 4 else '32'
+    segments = [(f' · {math.floor(used + 0.5)}% ', '2')]
+    marker = -1
+    pace_color = '38;5;255'
+    if is_number(reset):
+        remaining = min(duration, max(0, int(reset) - int(now)))
+        elapsed_pct = (duration - remaining) * 100 // duration
+        marker = (elapsed_pct * 10 + 50) // 100
+        # Match Claude's pace colours; the first tenth of each window stays neutral.
+        if 10 <= elapsed_pct < 100:
+            projected = used * 100 // elapsed_pct
+            for ceiling, palette in [(50, 34), (75, 37), (90, 178),
+                                     (100, 166), (120, 160), (math.inf, 129)]:
+                if projected < ceiling:
+                    pace_color = f'38;5;{palette}'
+                    break
+    for boundary in range(11):
+        if boundary == marker:
+            segments += [('│', pace_color)]
+        if boundary < 10:
+            segments += [('◼' if boundary < filled else '◻', '2;' + color)]
+    if is_number(reset) and reset > now:
+        local = datetime.fromtimestamp(reset)
+        weekday = ('Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun')[local.weekday()]
+        day = f'{weekday} ' if weekly else ''
+        segments += [(f' → {day}{local.hour}:{local.minute:02}', '2')]
+    return segments
 
 
 class Footer:
@@ -328,21 +375,23 @@ class Footer:
             self.last = None
             return b''
         metadata = self.metadata
-        segments = [(metadata.model, '35'), ('@', '37'), (self.host, '34'),
-                    (' ' + metadata.directory, '33')]
+        segments = [(metadata.model, '1;35'), ('@', '1;37'), (self.host, '1;34'),
+                    (' ' + metadata.directory, '1;33')]
         if metadata.branch:
             segments += [(' · ' + metadata.branch, '2;32')]
         if metadata.context is not None:
             segments += [(f' · {metadata.context}% ctx', '2')]
+        wall_now = time.time()
         if metadata.used is not None:
-            used = metadata.used
-            filled = min(10, max(0, math.floor(used / 10 + 0.5)))
-            color = '31' if filled >= 9 else '38;5;208' if filled >= 7 else '33' if filled >= 4 else '32'
-            segments += [(f' · {used}% ', '2'), ('◼' * filled + '◻' * (10 - filled), color)]
-            reset = self.rates.window.get('resetsAt')
-            if reset and reset > time.time():
-                local = datetime.fromtimestamp(reset)
-                segments += [(f' → {local.hour}:{local.minute:02}', '2')]
+            segments += quota_segments(metadata.used, self.rates.window.get('resetsAt'),
+                                       18000, wall_now)
+        weekly = getattr(self.rates, 'weekly', {})
+        used, reset = weekly.get('usedPercent'), weekly.get('resetsAt')
+        if (is_number(used) and 0 <= used <= 100 and is_number(reset)
+                and reset > wall_now):
+            elapsed = min(604800, max(0, 604800 - (reset - wall_now)))
+            if used * 604800 > elapsed * 100:
+                segments += quota_segments(used, reset, 604800, wall_now, weekly=True)
         if guard.armed(now):
             segments += [(' · Ctrl-D again to exit', '33')]
         content = fit_segments(segments, max(0, screen.columns - 3))
