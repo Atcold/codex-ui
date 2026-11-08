@@ -23,14 +23,16 @@ final class Dictation: NSObject, NSApplicationDelegate {
     var cancelledFiles: [URL] = []
     var eventTap: CFMachPort?
     let audioQueue = DispatchQueue(label: "dictation.audio")
-    let marker = "🎙️  "
+    let marker = "🔴 "
     let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/share/whisper-dictation")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         status = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         setStatus("Loading…", symbol: "mic")
+        status.button?.toolTip = "Whisper Dictation — ⌃⌥D or F16 records"
         let menu = NSMenu()
         menu.addItem(withTitle: "Record / stop", action: #selector(toggle), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "About Whisper Dictation", action: #selector(about), keyEquivalent: "").target = self
         menu.addItem(withTitle: "Quit", action: #selector(quit), keyEquivalent: "").target = self
         status.menu = menu
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
@@ -123,7 +125,7 @@ final class Dictation: NSObject, NSApplicationDelegate {
                 let completedSession = session
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
                     guard self.finishing, self.session == completedSession, self.sameTarget() else { return }
-                    self.key(115) // Home: microphone and its following space are first.
+                    self.key(115) // Home: marker and its following spaces are first.
                     for _ in self.marker { self.key(117) } // Remove the complete recording marker.
                     self.key(119) // End: send the completed single-line transcript.
                     if !self.preview.isEmpty { self.key(36) }
@@ -255,6 +257,12 @@ final class Dictation: NSObject, NSApplicationDelegate {
     }
     func alert(_ message: String) {
         let a = NSAlert(); a.messageText = "Whisper Dictation"; a.informativeText = message; a.runModal()
+    }
+    @objc func about() {
+        let a = NSAlert()
+        a.messageText = "Whisper Dictation"
+        a.informativeText = "Records your microphone and types the transcript into the app you are focused on. Press ⌃⌥D (or F16) to start and stop; Escape cancels, and this menu can stop or quit the helper.\n\nTranscription runs locally through MLX Whisper (whisper-large-v3-turbo) — audio never leaves this Mac.\n\nHelper: ~/.local/share/whisper-dictation\nLog: worker.log"
+        a.runModal()
     }
     @objc func quit() { cancel(); worker?.terminate(); NSApp.terminate(nil) }
 }
