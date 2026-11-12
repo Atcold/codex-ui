@@ -8,7 +8,7 @@ The wrapper obtains model, project, branch, context, quota, and run state throug
 
 The model, machine, and directory are bold; context and quota boxes are dimmed. The five-hour bar includes an elapsed-time `│` marker at the nearest box boundary. Its colour follows Claude’s projected-usage spectrum, with a neutral marker during the first 30 minutes.
 
-Quota windows come from the official client’s read-only `account/rateLimits/read` app-server RPC, refreshed every 90 seconds. The weekly quota appears beside the five-hour quota only when its consumption exceeds the elapsed share of the week, compared before rounding the boxes. It uses the same dim boxes and pace marker, with its local reset weekday and time. Percentage values come from the active UI. If the usage read is unavailable, the percentage and boxes remain while the reset time is omitted.
+Quota windows come from the official client’s read-only `account/rateLimits/read` app-server RPC, refreshed every 90 seconds. The weekly quota appears beside the five-hour quota once 75% is consumed, or earlier when its consumption exceeds the elapsed share of the week, compared before rounding the boxes. It uses the same dim boxes and pace marker, with its local reset weekday and time. Percentage values come from the active UI. If the usage read is unavailable, the percentage and boxes remain while the reset time is omitted.
 
 On a recognized empty, ready prompt, the first Ctrl-D arms quitting for one second and adds a footer hint. A second Ctrl-D in that interval reaches Codex and quits. Nonempty prompts, dialogs, and working states retain native Ctrl-D behavior. Other input cancels the armed state. Unknown prompt layouts retain the native behavior.
 

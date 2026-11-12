@@ -390,7 +390,8 @@ class Footer:
         if (is_number(used) and 0 <= used <= 100 and is_number(reset)
                 and reset > wall_now):
             elapsed = min(604800, max(0, 604800 - (reset - wall_now)))
-            if used * 604800 > elapsed * 100:
+            # From 75% used, or earlier when consumption runs ahead of the week.
+            if used >= 75 or used * 604800 > elapsed * 100:
                 segments += quota_segments(used, reset, 604800, wall_now, weekly=True)
         if guard.armed(now):
             segments += [(' · Ctrl-D again to exit', '33')]
