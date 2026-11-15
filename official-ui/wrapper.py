@@ -2,6 +2,8 @@
 """Render the familiar footer around an unmodified official Codex process."""
 from __future__ import annotations
 
+from collections import deque
+import codecs
 from dataclasses import dataclass
 from datetime import datetime
 import errno
@@ -117,6 +119,64 @@ class TitleFilter:
                 else:
                     self.state = 'osc-escape' if byte == 27 else 'osc'
         return bytes(output)
+
+
+class OutputBoundary:
+    """Wait for complete VT sequences, UTF-8 characters, and synchronized frames."""
+    def __init__(self):
+        self.state = 'ground'
+        self.sequence = bytearray()
+        self.osc = False
+        self.synchronized = False
+        self.decoder = codecs.getincrementaldecoder('utf-8')('replace')
+
+    @property
+    def ready(self) -> bool:
+        return (self.state == 'ground' and not self.synchronized
+                and not self.decoder.getstate()[0])
+
+    def feed(self, data: bytes):
+        self.decoder.decode(data)
+        for byte in data:
+            if self.state == 'ground':
+                if byte == 27:
+                    self.state = 'escape'
+            elif self.state == 'escape':
+                if byte == 91:
+                    self.state = 'csi'
+                    self.sequence.clear()
+                elif byte in (93, 80, 94, 95, 88):
+                    self.osc = byte == 93
+                    self.state = 'string'
+                elif 32 <= byte <= 47:
+                    self.state = 'intermediate'
+                elif byte != 27:
+                    self.state = 'ground'
+            elif self.state == 'intermediate':
+                if byte == 27:
+                    self.state = 'escape'
+                elif 48 <= byte <= 126:
+                    self.state = 'ground'
+            elif self.state == 'csi':
+                if byte == 27:
+                    self.state = 'escape'
+                elif 64 <= byte <= 126:
+                    if (byte in (104, 108) and self.sequence.startswith(b'?')
+                            and b'2026' in self.sequence[1:].split(b';')):
+                        self.synchronized = byte == 104
+                    self.state = 'ground'
+                elif len(self.sequence) < 256:
+                    self.sequence.append(byte)
+            elif self.state == 'string':
+                if byte == 27:
+                    self.state = 'string_escape'
+                elif byte == 7 and self.osc:
+                    self.state = 'ground'
+            elif self.state == 'string_escape':
+                if byte == 92:
+                    self.state = 'ground'
+                elif byte != 27:
+                    self.state = 'string'
 
 
 class Screen(pyte.Screen):
@@ -395,7 +455,11 @@ class Footer:
                 segments += quota_segments(used, reset, 604800, wall_now, weekly=True)
         if guard.armed(now):
             segments += [(' · Ctrl-D again to exit', '33')]
-        content = fit_segments(segments, max(0, screen.columns - 3))
+        hint = ' · ⌃⌥ L refresh'
+        width = max(0, screen.columns - 3)
+        hint_width = sum(max(0, wcwidth(char)) for char in hint)
+        content = (fit_segments(segments, max(0, width - hint_width))
+                   + fit_segments([(hint, '2')], min(width, hint_width)))
         state = (row, screen.columns, content)
         if self.last == state and row not in screen.dirty:
             return b''
@@ -415,6 +479,8 @@ class ScrollKeys:
         b'\x1b[5;3:2~': 64, b'\x1b[6;3:2~': 65,
         b'\x1b[57362;3u': 64, b'\x1b[57363;3u': 65,
     }
+    REFRESH_KEYS = (b'\x1b\x0c', b'\x1b[108;7u', b'\x1b[108;7:1u',
+                    b'\x1b[108;7:2u', b'\x1b[27;7;108~')
     START_PASTE = b'\x1b[200~'
     END_PASTE = b'\x1b[201~'
 
@@ -422,6 +488,7 @@ class ScrollKeys:
         self.pending = bytearray()
         self.pasting = False
         self.deadline = 0.0
+        self.refresh_requested = False
 
     def feed(self, data: bytes, screen: Screen, footer: Footer, now: float) -> bytes:
         self.pending.extend(data)
@@ -435,13 +502,16 @@ class ScrollKeys:
                 del self.pending[:stop]
                 continue
             tokens = ((self.END_PASTE,) if self.pasting
-                      else (self.START_PASTE, *self.KEYS))
+                      else (self.START_PASTE, *self.REFRESH_KEYS, *self.KEYS))
             matched = next((token for token in tokens if self.pending.startswith(token)), None)
             if matched is not None:
                 del self.pending[:len(matched)]
                 if matched in (self.START_PASTE, self.END_PASTE):
                     self.pasting = matched == self.START_PASTE
                     output.extend(matched)
+                    continue
+                if matched in self.REFRESH_KEYS:
+                    self.refresh_requested = True
                     continue
                 row = footer.locate(screen)
                 prompt = next((previous for previous in range((row or 0) - 1,
@@ -488,6 +558,47 @@ def write_all(fd: int, data: bytes):
         data = data[count:]
 
 
+def save_refresh_snapshot(screen: Screen, footer: Footer, master: int,
+                          events: deque, folder: Path | None = None,
+                          phase: str = 'before') -> Path | None:
+    """Keep the visible pane and geometry before a manual recovery redraw."""
+    try:
+        if folder is None:
+            root = Path.home() / 'Work/Scratch/codex-ui-refresh'
+            root.mkdir(parents=True, exist_ok=True, mode=0o700)
+            folder = root / (datetime.now().strftime('%Y%m%d-%H%M%S-%f') + f'-{os.getpid()}')
+            folder.mkdir(mode=0o700)
+        state = {
+            'time': datetime.now().isoformat(), 'phase': phase,
+            'wrapper_pid': os.getpid(), 'tmux_pane': os.environ.get('TMUX_PANE'),
+            'outer_size': terminal_size(0)[:2], 'child_size': terminal_size(master)[:2],
+            'screen_size': [screen.lines, screen.columns],
+            'cursor': {'row': screen.cursor.y, 'column': screen.cursor.x,
+                       'hidden': screen.cursor.hidden},
+            'footer_row': footer.locate(screen), 'last_footer': footer.last,
+            'suspended': screen.suspended, 'dirty_rows': sorted(screen.dirty),
+            'recent_events': list(events),
+        }
+        (folder / f'{phase}.json').write_text(json.dumps(state, indent=2) + '\n')
+        (folder / f'{phase}-wrapper-screen.txt').write_text('\n'.join(screen.display) + '\n')
+        pane = os.environ.get('TMUX_PANE')
+        if pane:
+            for name, command in (
+                ('pane.txt', ['tmux', 'capture-pane', '-p', '-t', pane]),
+                ('pane.ansi', ['tmux', 'capture-pane', '-p', '-e', '-t', pane]),
+                ('tmux.txt', ['tmux', 'display-message', '-p', '-t', pane,
+                             '#{pane_id} #{pane_width}x#{pane_height} cursor=#{cursor_x},#{cursor_y} layout=#{window_layout}'])):
+                result = subprocess.run(command, capture_output=True, timeout=2)
+                (folder / f'{phase}-{name}').write_bytes(result.stdout)
+                if result.returncode:
+                    (folder / f'{phase}-{name}.error').write_bytes(result.stderr)
+        return folder
+    except (OSError, subprocess.SubprocessError, ValueError) as error:
+        # A diagnostic failure must still allow the requested recovery.
+        events.append({'time': time.monotonic(), 'event': 'snapshot_error', 'error': str(error)})
+        return folder
+
+
 def first_command(args: list[str]) -> str | None:
     takes_value = {'-c', '--config', '-C', '--cd', '-m', '--model', '-p', '--profile',
                    '-s', '--sandbox', '-a', '--ask-for-approval', '--add-dir',
@@ -523,6 +634,7 @@ def main() -> int:
     rows, columns, size = terminal_size(0)
     screen = Screen(columns, rows)
     stream = pyte.ByteStream(screen)
+    output_boundary = OutputBoundary()
     rates = RateReader(binary)
     footer = Footer(metadata, host_name(), version, rates)
     guard = ExitGuard()
@@ -536,7 +648,13 @@ def main() -> int:
     if child == 0:
         os.execv(binary, [binary, *settings, *args])
     fcntl.ioctl(master, termios.TIOCSWINSZ, size)
+    os.set_blocking(master, False)
+    pending_input = bytearray()
     resize_pending = False
+    recent_events = deque(maxlen=100)
+    refresh_restore_at = None
+    refresh_capture_at = None
+    refresh_folder = None
     def resized(_signum, _frame):
         nonlocal resize_pending
         resize_pending = True
@@ -551,13 +669,41 @@ def main() -> int:
                 if resize_pending:
                     resize_pending = False
                     rows, columns, size = terminal_size(0)
+                    recent_events.append({'time': time.monotonic(), 'event': 'resize',
+                                          'old': [screen.lines, screen.columns],
+                                          'new': [rows, columns]})
                     fcntl.ioctl(master, termios.TIOCSWINSZ, size)
                     screen.resize(lines=rows, columns=columns)
                     footer.last = None
-                for key, _ in selector.select(0.1):
+                if refresh_restore_at is not None and time.monotonic() >= refresh_restore_at:
+                    rows, columns, size = terminal_size(0)
+                    fcntl.ioctl(master, termios.TIOCSWINSZ, size)
+                    screen.resize(lines=rows, columns=columns)
+                    footer.last = None
+                    refresh_restore_at = None
+                    refresh_capture_at = time.monotonic() + 0.5
+                    recent_events.append({'time': time.monotonic(), 'event': 'refresh_restored',
+                                          'size': [rows, columns]})
+                if refresh_capture_at is not None and time.monotonic() >= refresh_capture_at:
+                    save_refresh_snapshot(screen, footer, master, recent_events,
+                                          refresh_folder, 'after')
+                    refresh_capture_at = None
+                selector.modify(master, selectors.EVENT_READ |
+                                (selectors.EVENT_WRITE if pending_input else 0))
+                for key, event_mask in selector.select(0.1):
                     if key.fd == master:
+                        if event_mask & selectors.EVENT_WRITE and pending_input:
+                            try:
+                                count = os.write(master, pending_input[:4096])
+                                del pending_input[:count]
+                            except BlockingIOError:
+                                pass
+                        if not event_mask & selectors.EVENT_READ:
+                            continue
                         try:
                             data = os.read(master, 65536)
+                        except BlockingIOError:
+                            continue
                         except OSError as error:
                             if error.errno == errno.EIO:
                                 data = b''
@@ -566,7 +712,9 @@ def main() -> int:
                         if not data:
                             _, status = os.waitpid(child, 0)
                             return os.waitstatus_to_exitcode(status)
-                        write_all(1, titles.feed(data))
+                        output = titles.feed(data)
+                        write_all(1, output)
+                        output_boundary.feed(output)
                         stream.feed(data)
                     else:
                         data = os.read(0, 65536)
@@ -575,14 +723,33 @@ def main() -> int:
                         filtered = guard.filter(scroll_keys.feed(
                             data, screen, footer, time.monotonic()), time.monotonic())
                         if filtered:
-                            write_all(master, filtered)
+                            pending_input.extend(filtered)
                 pending = scroll_keys.expire(time.monotonic())
                 if pending:
-                    write_all(master, guard.filter(pending, time.monotonic()))
-                patch = footer.render(screen, guard, time.monotonic())
-                if patch:
-                    write_all(1, patch)
-                screen.dirty.clear()
+                    pending_input.extend(guard.filter(pending, time.monotonic()))
+                if scroll_keys.refresh_requested:
+                    scroll_keys.refresh_requested = False
+                    recent_events.append({'time': time.monotonic(), 'event': 'manual_refresh'})
+                    refresh_folder = save_refresh_snapshot(screen, footer, master, recent_events)
+                    refresh_capture_at = None
+                    rows, columns, _ = terminal_size(0)
+                    # A real size change makes the native UI reflow and repaint its retained
+                    # transcript and composer. Restore the actual size on the next event-loop turns.
+                    temporary_columns = columns - 1 if columns > 1 else 2
+                    fcntl.ioctl(master, termios.TIOCSWINSZ,
+                                struct.pack('HHHH', rows, temporary_columns, 0, 0))
+                    screen.resize(lines=rows, columns=temporary_columns)
+                    footer.last = None
+                    guard.armed_until = 0
+                    refresh_restore_at = time.monotonic() + 0.2
+                # Read boundaries can fall inside a VT command or native drawing frame.
+                # Inserting cursor moves there corrupts the command on the real terminal.
+                if output_boundary.ready and titles.state == 'plain':
+                    patch = (footer.render(screen, guard, time.monotonic())
+                             if refresh_restore_at is None else b'')
+                    if patch:
+                        write_all(1, patch)
+                    screen.dirty.clear()
     finally:
         rates.close()
         signal.signal(signal.SIGWINCH, previous_handler)

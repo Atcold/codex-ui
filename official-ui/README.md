@@ -17,3 +17,9 @@ The installer switches only the local `codex-ui` launcher, preserving its previo
 Option + Page Up and Option + Page Down scroll the transcript one row. The wrapper translates those shortcuts into native wheel events above the composer, where the default wheel speed is one row. Pager overlays use native keymap bindings for the same shortcuts. Plain page keys retain page movement, and bracketed paste passes through unchanged.
 
 The official executable remains responsible for computer-use authentication. App access and navigation have been verified through the wrapper. Footer appearance, resizing, and quit behavior should be reviewed when updating Codex.
+
+Ctrl + Option + L saves a diagnostic snapshot, then asks the native UI to redraw by briefly narrowing its PTY by one column and restoring the actual pane dimensions. The footer shows the shortcut. The snapshot includes the visible tmux pane as plain text and ANSI text, the wrapper’s screen model, cursor and footer positions, pane geometry, and the last 100 resize and refresh events. A second snapshot is taken after the redraw. Each capture goes into a timestamped local `Work/Scratch/codex-ui-refresh/` under the user’s home directory and contains the conversation and unsent text visible in the pane. Bracketed paste preserves these key sequences as pasted content. Review refresh behavior with an unsent line, after a tmux split, and after changing terminal font size.
+
+Input to the child PTY is queued and written in bounded chunks when the connection is writable, while output continues to drain. This keeps long dictation or pasted input from blocking the wrapper while Codex is drawing.
+
+Footer patches wait until native output has completed its terminal control sequence, UTF-8 character, and synchronized drawing frame. Fragmented reads preserve pending screen changes until the footer can be drawn at that boundary.
