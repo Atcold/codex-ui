@@ -186,6 +186,24 @@ class Screen(pyte.Screen):
         self.suspended = False
         super().__init__(columns, lines)
 
+    @property
+    def display(self) -> list[str]:
+        rows = []
+        for row in range(self.lines):
+            line = self.buffer[row]
+            parts = []
+            follows_wide = False
+            for column in range(self.columns):
+                char = line[column].data
+                if char:
+                    parts.append(char)
+                elif not follows_wide:
+                    # Overwriting the leading cell can leave a wide-character stub.
+                    parts.append(' ')
+                follows_wide = bool(char) and wcwidth(char[0]) == 2
+            rows.append(''.join(parts))
+        return rows
+
     def set_mode(self, *modes, **kwargs):
         if kwargs.get('private') and 1049 in modes:
             self.suspended = False
