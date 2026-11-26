@@ -204,6 +204,13 @@ class Screen(pyte.Screen):
             rows.append(''.join(parts))
         return rows
 
+    def set_margins(
+        self, top: int | None = None, bottom: int | None = None, *, private: bool = False
+    ) -> None:
+        # CSI ? ... r restores private modes. Only CSI ... r sets scroll margins.
+        if not private:
+            super().set_margins(top, bottom)
+
     def set_mode(self, *modes, **kwargs):
         if kwargs.get('private') and 1049 in modes:
             self.suspended = False
